@@ -1,4 +1,4 @@
-module github.com/QZLin/realmdns
+module github.com/qzlin/realmdns
 
 go 1.18
 
