@@ -2,7 +2,7 @@
 
 ## Name
 
-Real mDNS - CoreDNS plugin that reads mDNS records from the local network and responds
+Real mDNS -- A CoreDNS plugin that reads mDNS records from the local network and responds
 to queries based on those records.
 
 ## Description
@@ -12,69 +12,53 @@ accessible through a standard DNS server.
 
 ## Syntax
 
-~~~
+```
 realmdns [bind address]
-~~~
+```
 
 ## Examples
 
-~~~ corefile
+``` corefile
 local.:53 {
     realmdns
 }
-~~~
+.:53 {
+    forward . 1.1.1.1 8.8.8.8
+}
+```
 
 And test with `dig`:
 
-~~~ txt
+``` txt
 dig @localhost test.local
 
 ;; ANSWER SECTION:
-test.local. 60 IN A   12.0.0.24
-test.local. 60 IN AAAA fe80::f816:3eff:fe49:19b3
-~~~
+test.local. 60 IN A   10.0.0.1
+test.local. 60 IN AAAA fe80::abcd:abcd:abcd:abcd
+```
 
-If `minimum SRV records` is specified in the configuration, the plugin will wait
-until it has at least that many SRV records before responding with any of them.
-`minimum SRV records` defaults to `3`.
+Example corefile for tests:
 
-~~~ corefile
-example.com {
-    mdns example.com 2
+```corefile
+local.:54 {
+    log
+    debug
+    realmdns
+    errors
 }
-~~~
 
-This would mean that at least two SRV records of a given type would need to be
-present for any SRV records to be returned. If only one record is found, any
-requests for that type of SRV record would receive no results.
-
-If `filter text` is specified in the configuration, the plugin will ignore any
-mDNS records that do not include the specified text in the service name. This
-allows the plugin to be used in environments where there may be mDNS services
-advertised that are not intended for use with it. When `filter text` is not
-set, all records will be processed.
-
-~~~ corefile
-example.com {
-    mdns example.com 3 my-id
+.:54 {
+    forward . 1.1.1.1 8.8.8.8
+    cache
+    log
+    errors
 }
-~~~
 
-This configuration would ignore any mDNS records that do not contain the
-string "my-id" in their service name.
+```
 
-If `bind address` is specified in the configuration, the plugin will only send
-mDNS traffic to the associated interface. This prevents sending multicast
-packets on interfaces where that may not be desirable. To use `bind address`
-without setting a filter, set `filter text` to "".
+Test with dig ipv4/ipv6
 
-~~~ corefile
-example.com {
-    mdns example.com 3 "" 192.168.1.1
-}
-~~~
-
-This configuration will only send multicast packets to the interface assigned
-the `192.168.1.1` address. The interface lookup is dynamic each time an mDNS
-query is sent, so if the address moves to a different interface the plugin
-will automatically switch to the new one.
+```txt
+dig -p 54 '@127.0.0.1' test.local
+dig -p 54 '@127.0.0.1' test.local AAAA
+```
