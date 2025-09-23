@@ -3,17 +3,14 @@ module github.com/qzlin/realmdns
 go 1.18
 
 require (
-	github.com/celebdor/zeroconf v0.0.0-20210412110229-8ba34664402f
 	github.com/coredns/caddy v1.1.1
 	github.com/coredns/coredns v1.10.0
 	github.com/miekg/dns v1.1.50
-	golang.org/x/net v0.0.0-20220722155237-a158d28d115b
 )
 
 require (
 	github.com/apparentlymart/go-cidr v1.1.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
 	github.com/cespare/xxhash/v2 v2.1.2 // indirect
 	github.com/flynn/go-shlex v0.0.0-20150515145356-3f9db97f8568 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
@@ -26,6 +23,7 @@ require (
 	github.com/prometheus/procfs v0.8.0 // indirect
 	github.com/stretchr/testify v1.8.0 // indirect
 	golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4 // indirect
+	golang.org/x/net v0.0.0-20220722155237-a158d28d115b // indirect
 	golang.org/x/sys v0.0.0-20220804214406-8e32c043e418 // indirect
 	golang.org/x/text v0.3.7 // indirect
 	golang.org/x/tools v0.1.12 // indirect
