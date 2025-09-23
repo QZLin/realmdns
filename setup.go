@@ -1,4 +1,4 @@
-package mdns
+package realmdns
 
 import (
 	"errors"
@@ -16,7 +16,7 @@ import (
 )
 
 func init() {
-	caddy.RegisterPlugin("mdns", caddy.Plugin{
+	caddy.RegisterPlugin("realmdns", caddy.Plugin{
 		ServerType: "dns",
 		Action:     setup,
 	})
@@ -57,7 +57,7 @@ func setup(c *caddy.Controller) error {
 	m := MDNS{Domain: strings.TrimSuffix(domain, "."), minSRV: minSRV, filter: filter, bindAddress: bindAddress, mutex: &mutex, mdnsHosts: &mdnsHosts, srvHosts: &srvHosts, cnames: &cnames}
 
 	c.OnStartup(func() error {
-		go browseLoop(&m)
+		//go browseLoop(&m)
 		return nil
 	})
 

@@ -1,4 +1,4 @@
-package mdns
+package realmdns
 
 import (
 	"fmt"
@@ -15,11 +15,10 @@ import (
 
 	"github.com/celebdor/zeroconf"
 	"github.com/miekg/dns"
-	"github.com/openshift/mdns-publisher/pkg/publisher"
 	"golang.org/x/net/context"
 )
 
-var log = clog.NewWithPlugin("mdns")
+var log = clog.NewWithPlugin("realmdns")
 
 type MDNS struct {
 	Next        plugin.Handler
@@ -34,12 +33,13 @@ type MDNS struct {
 }
 
 func (m MDNS) ReplaceDomain(input string) string {
-	// Replace input domain with our configured custom domain
-	fqDomain := "." + strings.TrimSuffix(m.Domain, ".") + "."
-	domainParts := strings.SplitN(input, ".", 2)
-	// +1 so we strip the leading . as well
-	suffixLen := len(domainParts[1]) + 1
-	return input[0:len(input)-suffixLen] + fqDomain
+	//// Replace input domain with our configured custom domain
+	//fqDomain := "." + strings.TrimSuffix(m.Domain, ".") + "."
+	//domainParts := strings.SplitN(input, ".", 2)
+	//// +1 so we strip the leading . as well
+	//suffixLen := len(domainParts[1]) + 1
+	//return input[0:len(input)-suffixLen] + fqDomain
+	return input[0 : len(input)-1]
 }
 
 func (m MDNS) AddARecord(msg *dns.Msg, state *request.Request, hosts map[string]*zeroconf.ServiceEntry, name string) bool {
@@ -71,20 +71,17 @@ func GetIndex(host string) string {
 
 func (m MDNS) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 
-	log.Debug("Received query")
+	//log.Debug("Received query")
 	msg := new(dns.Msg)
 	msg.SetReply(r)
 	msg.Authoritative = true
 	msg.RecursionAvailable = true
 	state := request.Request{W: w, Req: r}
+	fixed_name := m.ReplaceDomain(state.QName())
 	log.Debugf("Looking for name: %s", state.QName())
-	// Just for convenience so we don't have to keep dereferencing these
-	mdnsHosts := *m.mdnsHosts
-	srvHosts := *m.srvHosts
-	cnames := *m.cnames
 
-	if !strings.HasSuffix(state.QName(), m.Domain+".") {
-		log.Debugf("Skipping due to query '%s' not in our domain '%s'", state.QName(), m.Domain)
+	if !strings.HasSuffix(state.QName(), ".local.") {
+		log.Debugf("Skipping due to query '%s' not ending with '.local.'", state.QName())
 		return plugin.NextOrFailure(m.Name(), m.Next, ctx, w, r)
 	}
 
@@ -98,30 +95,61 @@ func (m MDNS) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (i
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 
-	if m.AddARecord(msg, &state, mdnsHosts, state.Name()) {
-		log.Debug(msg)
-		w.WriteMsg(msg)
-		return dns.RcodeSuccess, nil
-	}
+	addrs, err := net.LookupHost(fixed_name)
+	if err != nil {
+		log.Errorf("Lookup error: %s", err)
+	} else {
+		msg.Answer = []dns.RR{} // 清空可能存在的现有答案
+		qtype := state.QType()
+		for _, addr := range addrs {
+			// 处理IPv6地址中的区域标识
+			cleanAddr := addr
+			if strings.Contains(addr, "%") {
+				parts := strings.Split(addr, "%")
+				cleanAddr = parts[0]
+				log.Debugf("Removed zone identifier from %s, using %s", addr, cleanAddr)
+			}
 
-	cnameTarget, present := cnames[state.Name()]
-	if present {
-		cnameheader := dns.RR_Header{Name: state.QName(), Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 0}
-		msg.Answer = append(msg.Answer, &dns.CNAME{Hdr: cnameheader, Target: cnameTarget})
-		m.AddARecord(msg, &state, mdnsHosts, cnameTarget)
-		log.Debug(msg)
-		w.WriteMsg(msg)
-		return dns.RcodeSuccess, nil
-	}
-
-	srvEntry, present := srvHosts[state.Name()]
-	if present {
-		srvheader := dns.RR_Header{Name: state.QName(), Rrtype: dns.TypeSRV, Class: dns.ClassINET, Ttl: 0}
-		for _, host := range srvEntry {
-			msg.Answer = append(msg.Answer, &dns.SRV{Hdr: srvheader, Target: host.HostName, Priority: 0, Weight: 10, Port: uint16(host.Port)})
+			ip := net.ParseIP(cleanAddr)
+			if ip == nil {
+				log.Warningf("Invalid IP address: %s (cleaned from %s)", cleanAddr, addr)
+				continue
+			}
+			// 根据查询类型和IP地址类型创建相应的DNS记录
+			if qtype == dns.TypeA && ip.To4() != nil {
+				// 查询A记录且是IPv4地址
+				aRecord := &dns.A{
+					Hdr: dns.RR_Header{
+						Name:   state.QName(),
+						Rrtype: dns.TypeA,
+						Class:  dns.ClassINET,
+						Ttl:    300,
+					},
+					A: ip,
+				}
+				msg.Answer = append(msg.Answer, aRecord)
+			} else if qtype == dns.TypeAAAA && ip.To4() == nil {
+				// 查询AAAA记录且是IPv6地址
+				aaaaRecord := &dns.AAAA{
+					Hdr: dns.RR_Header{
+						Name:   state.QName(),
+						Rrtype: dns.TypeAAAA,
+						Class:  dns.ClassINET,
+						Ttl:    300,
+					},
+					AAAA: ip,
+				}
+				msg.Answer = append(msg.Answer, aaaaRecord)
+			}
 		}
-		log.Debug(msg)
-		w.WriteMsg(msg)
+		msg.SetRcode(state.Req, dns.RcodeSuccess)
+		msg.Authoritative = true
+		msg.RecursionAvailable = true
+		log.Debugf("Response message: %s", msg.String())
+		err = w.WriteMsg(msg)
+		if err != nil {
+			log.Errorf("Failed to write response: %s", err)
+		}
 		return dns.RcodeSuccess, nil
 	}
 	log.Debugf("No records found for '%s', forwarding to next plugin.", state.QName())
@@ -144,8 +172,9 @@ func (m *MDNS) BrowseMDNS() {
 				// Hacky - coerce .local to our domain
 				// I was having trouble using domains other than .local. Need further investigation.
 				// After further investigation, maybe this is working as intended:
-				// https://lists.freedesktop.org/archives/avahi/2006-February/000517.html
+				// https://lists.freedesktop.org/archives/avahi/2006-ebruary/000517.html
 				hostCustomDomain := m.ReplaceDomain(localEntry.HostName)
+				//hostCustomDomain := localEntry.HostName
 				mdnsHosts[hostCustomDomain] = entry
 			} else {
 				log.Debugf("Ignoring entry '%s' because it doesn't match filter '%s'\n",
@@ -162,6 +191,7 @@ func (m *MDNS) BrowseMDNS() {
 			log.Debugf("SRV Instance: %s, Service: %s, Domain: %s, HostName: %s, AddrIPv4: %s, AddrIPv6: %s\n", localEntry.Instance, localEntry.Service, localEntry.Domain, localEntry.HostName, localEntry.AddrIPv4, localEntry.AddrIPv6)
 			if strings.Contains(localEntry.Instance, m.filter) {
 				localEntry.HostName = m.ReplaceDomain(localEntry.HostName)
+				//localEntry.HostName = localEntry.HostName
 				srvName := localEntry.Service + "." + m.Domain + "."
 				srvHosts[srvName] = append(srvHosts[srvName], &localEntry)
 			} else {
@@ -172,14 +202,14 @@ func (m *MDNS) BrowseMDNS() {
 	}(srvEntriesCh)
 
 	var iface net.Interface
-	if m.bindAddress != "" {
-		foundIface, err := publisher.FindIface(net.ParseIP(m.bindAddress))
-		if err != nil {
-			log.Errorf("Failed to find interface for '%s'\n", m.bindAddress)
-		} else {
-			iface = foundIface
-		}
-	}
+	//if m.bindAddress != "" {
+	//	foundIface, err := publisher.FindIface(net.ParseIP(m.bindAddress))
+	//	if err != nil {
+	//		log.Errorf("Failed to find interface for '%s'\n", m.bindAddress)
+	//	} else {
+	//		iface = foundIface
+	//	}
+	//}
 	_ = queryService("_workstation._tcp", entriesCh, iface, ZeroconfImpl{})
 	_ = queryService("_etcd-server-ssl._tcp", srvEntriesCh, iface, ZeroconfImpl{})
 
@@ -244,7 +274,7 @@ func queryService(service string, channel chan *zeroconf.ServiceEntry, iface net
 	return nil
 }
 
-func (m MDNS) Name() string { return "mdns" }
+func (m MDNS) Name() string { return "realmdns" }
 
 type ResponsePrinter struct {
 	dns.ResponseWriter
@@ -275,4 +305,4 @@ type ResolverInterface interface {
 	Browse(context.Context, string, string, chan<- *zeroconf.ServiceEntry) error
 }
 
-const m = "mdns"
+const m = "realmdns"

@@ -1,4 +1,4 @@
-package mdns
+package realmdns
 
 import (
 	"context"

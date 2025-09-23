@@ -1,4 +1,4 @@
-module github.com/openshift/coredns-mdns/v4
+module github.com/QZLin/realmdns
 
 go 1.18
 
@@ -7,7 +7,6 @@ require (
 	github.com/coredns/caddy v1.1.1
 	github.com/coredns/coredns v1.10.0
 	github.com/miekg/dns v1.1.50
-	github.com/openshift/mdns-publisher v0.0.0-20220222182051-8fef1ccb075f
 	golang.org/x/net v0.0.0-20220722155237-a158d28d115b
 )
 
@@ -25,7 +24,6 @@ require (
 	github.com/prometheus/client_model v0.2.0 // indirect
 	github.com/prometheus/common v0.37.0 // indirect
 	github.com/prometheus/procfs v0.8.0 // indirect
-	github.com/sirupsen/logrus v1.8.1 // indirect
 	github.com/stretchr/testify v1.8.0 // indirect
 	golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4 // indirect
 	golang.org/x/sys v0.0.0-20220804214406-8e32c043e418 // indirect
