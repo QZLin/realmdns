@@ -10,6 +10,7 @@ import (
 )
 
 const pluginName = "realmdns"
+const pluginVer = "0.3"
 
 func init() {
 	caddy.RegisterPlugin(pluginName, caddy.Plugin{
@@ -35,6 +36,7 @@ func setup(c *caddy.Controller) error {
 	mdns := RealMDNS{bindAddress: bindAddress, mutex: &mutex}
 
 	c.OnStartup(func() error {
+		mdns.Greeting()
 		return nil
 	})
 

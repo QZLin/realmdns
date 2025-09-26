@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -13,11 +14,8 @@ import (
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 	"github.com/coredns/coredns/request"
 
-	"github.com/hashicorp/mdns"
 	"github.com/miekg/dns"
 )
-
-//const pluginName = "realmdns"
 
 var log = clog.NewWithPlugin(pluginName)
 
@@ -27,11 +25,68 @@ type RealMDNS struct {
 	mutex       *sync.RWMutex
 }
 
+func (realmdns RealMDNS) Greeting() {
+	log.Infof("This is %s(%s)", pluginName, pluginVer)
+}
+
 func (realmdns RealMDNS) ReplaceDomain(input string) string {
 	if len(input) > 0 && input[len(input)-1] == '.' {
 		return input[:len(input)-1]
 	}
 	return input
+}
+
+// queryMDNS queries A/AAAA records by sending mDNS packets from a random port
+// and multicasting them to 224.0.0.251:5353
+func queryMDNS(name string, timeout time.Duration) ([]dns.RR, error) {
+	var answers []dns.RR
+
+	// Create a UDP socket with a random port
+	conn, err := net.ListenUDP("udp4", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func(conn *net.UDPConn) {
+		err := conn.Close()
+		if err != nil {
+
+		}
+	}(conn)
+
+	types := []uint16{dns.TypeA, dns.TypeAAAA}
+
+	for _, qtype := range types {
+		m := new(dns.Msg)
+		m.SetQuestion(dns.Fqdn(name), qtype)
+		m.RecursionDesired = false
+		out, _ := m.Pack()
+
+		dst := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
+		_, err := conn.WriteToUDP(out, dst)
+		if err != nil {
+			log.Warningf("Failed to send mDNS query: %v", err)
+			continue
+		}
+
+		// Receive response
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+		buf := make([]byte, 1500)
+		n, _, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			log.Debugf("mDNS read timeout or error: %v", err)
+			continue
+		}
+
+		in := new(dns.Msg)
+		if err := in.Unpack(buf[:n]); err != nil {
+			log.Debugf("Failed to unpack mDNS response: %v", err)
+			continue
+		}
+
+		answers = append(answers, in.Answer...)
+	}
+
+	return answers, nil
 }
 
 func (realmdns RealMDNS) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
@@ -42,16 +97,17 @@ func (realmdns RealMDNS) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *
 
 	state := request.Request{W: w, Req: r}
 	qName := state.QName()
-	//fixedName := realmdns.ReplaceDomain(qName)
+	fixedName := realmdns.ReplaceDomain(qName)
 
 	log.Debugf("Looking for name: %s", qName)
 
+	// Only handle queries ending with ".local."
 	if !strings.HasSuffix(qName, ".local.") {
 		log.Debugf("Skipping query '%s' not ending with '.local.'", qName)
 		return plugin.NextOrFailure(realmdns.Name(), realmdns.Next, ctx, w, r)
 	}
 
-	// Handle only A, AAAA, SRV, CNAME, PTR
+	// Only handle specific DNS types
 	switch state.QType() {
 	case dns.TypeA, dns.TypeAAAA, dns.TypeSRV, dns.TypeCNAME, dns.TypePTR:
 	default:
@@ -60,82 +116,34 @@ func (realmdns RealMDNS) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *
 	}
 
 	msg.Answer = []dns.RR{}
+	msg.Extra = []dns.RR{}
 
-	entriesCh := make(chan *mdns.ServiceEntry, 10)
+	// Perform mDNS query
+	answers, err := queryMDNS(fixedName, 2*time.Second)
+	if err != nil {
+		log.Debugf("mDNS query failed: %v", err)
+	}
 
-	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	// Start lookup in goroutine
-	go func() {
-		defer close(entriesCh)
-		params := &mdns.QueryParam{
-			Service:             qName,
-			Domain:              "local",
-			Entries:             entriesCh,
-			WantUnicastResponse: false,
-			Timeout:             1 * time.Second,
-		}
-		_ = mdns.Query(params)
-	}()
-
-	var foundRecords bool
-
-Loop:
-	for {
-		select {
-		case <-lookupCtx.Done():
-			break Loop
-		case entry, ok := <-entriesCh:
-			if !ok {
-				break Loop
+	// Filter answers based on query type
+	for _, ans := range answers {
+		switch ans.Header().Rrtype {
+		case dns.TypeA:
+			if state.QType() == dns.TypeA {
+				msg.Answer = append(msg.Answer, ans)
+			} else if state.QType() == dns.TypeAAAA {
+				msg.Extra = append(msg.Extra, ans)
 			}
-			log.Debugf("Received mDNS entry: %+v", entry)
-
-			// A record
-			if state.QType() == dns.TypeA && entry.Addr != nil && entry.Addr.To4() != nil {
-				aRecord := &dns.A{
-					Hdr: dns.RR_Header{Name: qName, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 120},
-					A:   entry.Addr,
-				}
-				msg.Answer = append(msg.Answer, aRecord)
-				foundRecords = true
-			}
-
-			// AAAA record
-			if state.QType() == dns.TypeAAAA && entry.AddrV6 != nil && entry.AddrV6.To16() != nil {
-				aaaaRecord := &dns.AAAA{
-					Hdr:  dns.RR_Header{Name: qName, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 120},
-					AAAA: entry.AddrV6,
-				}
-				msg.Answer = append(msg.Answer, aaaaRecord)
-				foundRecords = true
-			}
-
-			// SRV record
-			if state.QType() == dns.TypeSRV && entry.Port > 0 && entry.Host != "" {
-				srvRecord := &dns.SRV{
-					Hdr:    dns.RR_Header{Name: qName, Rrtype: dns.TypeSRV, Class: dns.ClassINET, Ttl: 120},
-					Port:   uint16(entry.Port),
-					Target: dns.Fqdn(entry.Host),
-				}
-				msg.Answer = append(msg.Answer, srvRecord)
-				foundRecords = true
-			}
-
-			// PTR record
-			if state.QType() == dns.TypePTR && entry.Name != "" {
-				ptrRecord := &dns.PTR{
-					Hdr: dns.RR_Header{Name: qName, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: 120},
-					Ptr: dns.Fqdn(entry.Name),
-				}
-				msg.Answer = append(msg.Answer, ptrRecord)
-				foundRecords = true
+		case dns.TypeAAAA:
+			if state.QType() == dns.TypeAAAA {
+				msg.Answer = append(msg.Answer, ans)
+			} else if state.QType() == dns.TypeA {
+				msg.Extra = append(msg.Extra, ans)
 			}
 		}
 	}
 
-	if foundRecords {
+	// Send response if any answer found
+	if len(msg.Answer) > 0 {
 		msg.SetRcode(state.Req, dns.RcodeSuccess)
 		log.Debugf("Sending mDNS response: %s", msg.String())
 		if err := w.WriteMsg(msg); err != nil {
@@ -154,6 +162,7 @@ type ResponsePrinter struct {
 	dns.ResponseWriter
 }
 
+// WriteMsg prints plugin name before sending the DNS response
 func (r *ResponsePrinter) WriteMsg(res *dns.Msg) error {
 	_, err := fmt.Fprintln(out, pluginName)
 	if err != nil {
